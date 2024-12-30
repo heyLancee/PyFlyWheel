@@ -67,6 +67,12 @@ class FlyWheel:
     def connect(self) -> bool:
         """
         建立与飞轮的连接
+
+        Returns:
+            bool: 是否成功连接
+
+        Raises:
+            ConnectionError: 当连接失败时
         """
         try:
             if not self.serial.is_open:
@@ -81,6 +87,12 @@ class FlyWheel:
     def poll_status(self) -> bool:
         """
         发送轮询包并读取状态
+
+        Returns:
+            bool: 是否成功将命令放入队列
+
+        Raises:
+            ConnectionError: 当飞轮未连接时
         """
         if not self._is_connected:
             raise ConnectionError("飞轮未连接")
@@ -99,6 +111,12 @@ class FlyWheel:
         
         Args:
             speed: 目标转速 (-6050 到 +6050 RPM)
+
+        Returns:
+            bool: 是否成功将命令放入队列
+            
+        Raises:
+            ValueError: 当速度超出范围时
         """
         if not -6050 <= speed <= 6050:
             raise ValueError("速度必须在 -6050 到 +6050 RPM 之间")
@@ -108,6 +126,31 @@ class FlyWheel:
             self.queue.put(command, timeout=1.0)
             return True
         except Full:
+            return False
+        
+    def set_torque(self, torque: float) -> bool:
+        """
+        设置飞轮力矩
+        
+        Args:
+            torque: 目标力矩，单位 mNm，范围 -50 到 +50 mNm
+            
+        Returns:
+            bool: 是否成功将命令放入队列
+            
+        Raises:
+            ValueError: 当力矩超出范围时
+        """
+        # 验证力矩范围
+        if not -50 <= torque <= 50:
+            raise ValueError("力矩必须在 -50 到 +50 mNm 之间")
+
+        command = self._build_torque_command(torque)
+        try:
+            self.queue.put(command, timeout=1.0)
+            return True
+        except Full:
+            self.logger.error("命令队列已满")
             return False
 
     def _build_speed_command(self, speed: float) -> bytes:
@@ -129,6 +172,27 @@ class FlyWheel:
         checksum = (command_code + sum(speed_data)) & 0xFF
         
         return header + bytes([command_code]) + speed_data + bytes([checksum])
+
+    def _build_torque_command(self, torque: float) -> bytes:
+        """
+        构建力矩命令包
+        
+        Args:
+            torque: 目标力矩，单位 mNm
+            
+        Returns:
+            bytes: 命令字节序列
+        """
+        header = bytes([0xEB, 0x90])
+        command_code = 0xD3
+        
+        # 将力矩转换为IEEE 754格式
+        torque_bytes = struct.pack('>f', float(torque))
+        
+        # 计算校验和
+        checksum = (command_code + sum(torque_bytes)) & 0xFF
+        
+        return header + bytes([command_code]) + torque_bytes + bytes([checksum])
 
     def _process_data(self, data: bytes) -> Dict:
         """

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 import struct
 from pyflywheel.core import FlyWheel
+import queue
 
 
 class TestFlyWheel(unittest.TestCase):
@@ -199,6 +200,83 @@ class TestFlyWheel(unittest.TestCase):
         self.flywheel.disconnect()
         self.flywheel.serial.close.assert_called_once()
         self.assertFalse(self.flywheel._is_connected)
+        
+    def test_build_torque_command(self):
+        """
+        测试力矩命令构建
+        """
+        # 测试力矩 +30 mNm
+        command = self.flywheel._build_torque_command(30.0)
+        
+        # 验证命令格式
+        self.assertEqual(command[0:2], bytes([0xEB, 0x90]))  # 头部
+        self.assertEqual(command[2], 0xD3)  # 命令码
+        
+        # 验证力矩值（IEEE 754格式）
+        torque_bytes = command[3:7]
+        torque = struct.unpack('>f', bytes(torque_bytes))[0]
+        self.assertAlmostEqual(torque, 30.0)
+        
+        # 验证校验和
+        checksum = command[7]
+        expected_checksum = (0xD3 + sum(torque_bytes)) & 0xFF
+        self.assertEqual(checksum, expected_checksum)
+        
+        # 验证完整命令
+        self.assertEqual(command, bytes.fromhex('EB90D341F0000004'))
+        
+        # 测试力矩 -30 mNm
+        command = self.flywheel._build_torque_command(-30.0)
+        self.assertEqual(command, bytes.fromhex('EB90D3C1F0000084'))
+        
+    def test_set_torque_success(self):
+        """
+        测试正常设置力矩
+        """
+        # 模拟正确的8字节响应
+        self.flywheel.serial.read.return_value = b'\x00' * 8
+        
+        # 测试设置力矩
+        result = self.flywheel.set_torque(30.0)
+        self.assertTrue(result)
+        
+        # 验证写入命令
+        self.flywheel.serial.write.assert_called_once()
+        
+    def test_set_torque_failure(self):
+        """
+        测试设置力矩失败情况
+        """
+        # 模拟队列已满
+        self.flywheel.queue.put = Mock(side_effect=queue.Full)
+        
+        # 测试设置力矩
+        result = self.flywheel.set_torque(30.0)
+        self.assertFalse(result)
+        
+    def test_torque_limits(self):
+        """
+        测试力矩限制
+        """
+        # 测试超出范围的力矩
+        with self.assertRaises(ValueError) as context:
+            self.flywheel.set_torque(60)
+        self.assertEqual(str(context.exception), "力矩必须在 -50 到 +50 mNm 之间")
+        
+        with self.assertRaises(ValueError) as context:
+            self.flywheel.set_torque(-60)
+        self.assertEqual(str(context.exception), "力矩必须在 -50 到 +50 mNm 之间")
+            
+        # 测试边界值
+        try:
+            # 测试最大力矩
+            self.flywheel.set_torque(50)
+            # 测试最小力矩
+            self.flywheel.set_torque(-50)
+            # 测试零力矩
+            self.flywheel.set_torque(0)
+        except ValueError:
+            self.fail("合法力矩值引发了异常")
 
 
 if __name__ == '__main__':
