@@ -18,9 +18,10 @@ class FlyWheel:
     """
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
-    def __init__(self, port: str = 'COM7', baudrate: int = 115200, queue_size: int = 10, thread_frequency: int = 100, 
-                 callback: Callable[[Dict], None] = None, max_telemetry_size: int = 1000,
-                 logger: logging.Logger = None):
+    def __init__(self, inertia: float = 0.001608, port: str = 'COM5', baudrate: int = 115200, 
+                 queue_size: int = 10, thread_frequency: int = 100, callback: Callable[[Dict], None] = None, 
+                 max_telemetry_size: int = 1000, logger: logging.Logger = None, 
+                 auto_polling: bool = False, polling_frequency: float = 50.0):
         """
         初始化飞轮连接
         
@@ -32,7 +33,12 @@ class FlyWheel:
             callback: 回调函数,接收遥测数据字典,可用于实时控制转速
             max_telemetry_size: 遥测数据最大存储数量
             logger: 自定义日志记录器
+            auto_polling: 是否自动开启轮询线程
+            polling_frequency: 轮询频率，单位Hz
         """
+        # 惯量
+        self.inertia = inertia
+        
         self.logger = logger or logging.getLogger(__name__)
         self.serial = serial.Serial(
             port=port,
@@ -44,7 +50,8 @@ class FlyWheel:
         )
         self._is_connected = False
 
-        # 通信队列
+        # 添加条件变量
+        self._comm_condition = threading.Condition()
         self.queue = Queue(maxsize=queue_size)
 
         # 通信线程频率
@@ -52,7 +59,7 @@ class FlyWheel:
 
         # 启动一个线程，处理与飞轮的通信
         self._running = True
-        self._comm_thread = threading.Thread(target=self._communication_loop)
+        self._comm_thread = threading.Thread(target=self._communication_loop, daemon=True)
         self._comm_thread.start()
 
         # 回调函数，当收到32字节的遥测数据时，调用回调函数
@@ -60,6 +67,15 @@ class FlyWheel:
 
         # 存储遥测数据
         self.telemetry = deque(maxlen=max_telemetry_size)
+
+        # 轮询相关属性
+        self._polling_frequency = polling_frequency
+        self._polling_thread = None
+        self._polling = False
+        
+        # 如果设置了自动轮询，则启动轮询线程
+        if auto_polling:
+            self.start_polling()
 
     def __del__(self):
         """
@@ -99,14 +115,9 @@ class FlyWheel:
         """
         if not self._is_connected:
             raise ConnectionError("飞轮未连接")
-
-        # 发送轮询命令
+        
         command = bytes([0xEB, 0x90, 0xDD, 0x00, 0x00, 0x00, 0x00, 0xDD])
-        try:
-            self.queue.put(command, timeout=1.0)
-            return True
-        except Full:
-            return False
+        return self._send_command(command)
 
     def set_speed(self, speed: float) -> bool:
         """
@@ -123,13 +134,9 @@ class FlyWheel:
         """
         if not -6050 <= speed <= 6050:
             raise ValueError("速度必须在 -6050 到 +6050 RPM 之间")
-
+        
         command = self._build_speed_command(speed)
-        try:
-            self.queue.put(command, timeout=1.0)
-            return True
-        except Full:
-            return False
+        return self._send_command(command)
         
     def set_torque(self, torque: float) -> bool:
         """
@@ -147,14 +154,9 @@ class FlyWheel:
         # 验证力矩范围
         if not -50 <= torque <= 50:
             raise ValueError("力矩必须在 -50 到 +50 mNm 之间")
-
+        
         command = self._build_torque_command(torque)
-        try:
-            self.queue.put(command, timeout=1.0)
-            return True
-        except Full:
-            self.logger.error("命令队列已满")
-            return False
+        return self._send_command(command)
 
     def _build_speed_command(self, speed: float) -> bytes:
         """
@@ -230,12 +232,9 @@ class FlyWheel:
         """
         断开与飞轮的连接
         """
-        # 停止通信线程
-        self._running = False
-        if hasattr(self, '_comm_thread'):
-            self._comm_thread.join()
+        self._running = False  # 这会终止所有线程
+        self._polling = False  # 为了明确性,也设置轮询标志
         
-        # 关闭串口
         if self.serial.is_open:
             self.serial.close()
         self._is_connected = False
@@ -285,15 +284,23 @@ class FlyWheel:
                     time.sleep(1)
                     continue
 
-                try:
-                    command = self.queue.get(timeout=1/self.thread_frequency)
-                    self.serial.write(command)
-                except Empty:
-                    continue
-                except serial.SerialException as e:
-                    self.logger.error(f"串口通信错误: {e}")
-                    self._is_connected = False
-                    continue
+                # 使用条件变量等待命令
+                with self._comm_condition:
+                    while self.queue.empty() and self._running:
+                        self._comm_condition.wait(timeout=1.0)  # 设置超时防止永久阻塞
+                    
+                    if not self._running:  # 检查是否需要退出
+                        break
+                        
+                    try:
+                        command = self.queue.get_nowait()  # 不需要timeout了
+                        self.serial.write(command)
+                    except Empty:  # 以防万一
+                        continue
+                    except serial.SerialException as e:
+                        self.logger.error(f"串口通信错误: {e}")
+                        self._is_connected = False
+                        continue
 
                 # 固定频率
                 time.sleep(1/self.thread_frequency)
@@ -317,3 +324,58 @@ class FlyWheel:
             except Exception as e:
                 self.logger.exception(f"通信循环错误: {e}")
                 time.sleep(1/self.thread_frequency)
+
+    def start_polling(self) -> bool:
+        """
+        启动轮询线程
+        
+        Returns:
+            bool: 是否成功启动轮询
+        """
+        if self._polling:
+            self.logger.warning("轮询线程已在运行")
+            return False
+        
+        self._polling = True
+        self._polling_thread = threading.Thread(target=self._polling_loop, daemon=True)
+        self._polling_thread.start()
+        self.logger.info(f"已启动轮询线程，频率: {self._polling_frequency}Hz")
+        return True
+
+    def _polling_loop(self) -> None:
+        """
+        轮询循环
+        """
+        while self._polling and self._running:
+            try:
+                if not self._is_connected:
+                    self.logger.warning("飞轮未连接，轮询暂停")
+                    time.sleep(1)
+                    continue
+                
+                self.poll_status()
+                time.sleep(1 / self._polling_frequency)
+                
+            except Exception as e:
+                self.logger.error(f"轮询过程发生错误: {str(e)}")
+                time.sleep(1)
+                
+    def _send_command(self, command: bytes) -> bool:
+        """
+        发送命令到队列并通知通信线程
+        
+        Args:
+            command: 要发送的命令字节序列
+            
+        Returns:
+            bool: 是否成功发送
+        """
+        try:
+            self.queue.put_nowait(command)
+            with self._comm_condition:
+                self._comm_condition.notify()
+            return True
+        except Full:
+            self.logger.error("命令队列已满")
+            return False
+                
