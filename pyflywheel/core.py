@@ -1,25 +1,36 @@
 """
 飞轮控制核心模块
 """
+from collections import deque
 import serial
 import time
 import struct
-from typing import Dict
-from multiprocessing import Value
+import threading
+from typing import Dict, Callable
+from queue import Queue, Empty, Full
+import logging
 
 
 class FlyWheel:
     """
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
-    def __init__(self, port: str = 'COM7', baudrate: int = 115200):
+    def __init__(self, port: str = 'COM7', baudrate: int = 115200, queue_size: int = 10, thread_frequency: int = 100, 
+                 callback: Callable[[Dict], None] = None, max_telemetry_size: int = 1000,
+                 logger: logging.Logger = None):
         """
         初始化飞轮连接
         
         Args:
             port: RS232端口名称
             baudrate: 波特率
+            queue_size: 通信队列大小
+            thread_frequency: 通信线程频率
+            callback: 回调函数,接收遥测数据字典,可用于实时控制转速
+            max_telemetry_size: 遥测数据最大存储数量
+            logger: 自定义日志记录器
         """
+        self.logger = logger or logging.getLogger(__name__)
         self.serial = serial.Serial(
             port=port,
             baudrate=baudrate,
@@ -29,7 +40,30 @@ class FlyWheel:
             timeout=1
         )
         self._is_connected = False
-        
+
+        # 通信队列
+        self.queue = Queue(maxsize=queue_size)
+
+        # 通信线程频率
+        self.thread_frequency = thread_frequency
+
+        # 启动一个线程，处理与飞轮的通信
+        self._running = True
+        self._comm_thread = threading.Thread(target=self._communication_loop)
+        self._comm_thread.start()
+
+        # 回调函数，当收到32字节的遥测数据时，调用回调函数
+        self.callback = callback
+
+        # 存储遥测数据
+        self.telemetry = deque(maxlen=max_telemetry_size)
+
+    def __del__(self):
+        """
+        析构函数，确保资源正确释放
+        """
+        self.disconnect()
+
     def connect(self) -> bool:
         """
         建立与飞轮的连接
@@ -44,7 +78,7 @@ class FlyWheel:
             self._is_connected = False
             return False
 
-    def poll_status(self) -> Dict:
+    def poll_status(self) -> bool:
         """
         发送轮询包并读取状态
         """
@@ -53,8 +87,11 @@ class FlyWheel:
 
         # 发送轮询命令
         command = bytes([0xEB, 0x90, 0xDD, 0x00, 0x00, 0x00, 0x00, 0xDD])
-        self.serial.write(command)
-        return self._process_response()
+        try:
+            self.queue.put(command, timeout=1.0)
+            return True
+        except Full:
+            return False
 
     def set_speed(self, speed: float) -> bool:
         """
@@ -67,21 +104,11 @@ class FlyWheel:
             raise ValueError("速度必须在 -6050 到 +6050 RPM 之间")
 
         command = self._build_speed_command(speed)
-        self.serial.write(command)
-        return self._process_response()
-    
-    # 统一处理response
-    def _process_response(self) -> Dict:
-        """
-        处理8字节的响应
-        """
-        response = self.serial.read(32)
-        if len(response) == 8:
-            return {}
-        elif len(response) == 32:
-            return self._process_data(response)
-        else:
-            raise ValueError("响应长度错误")
+        try:
+            self.queue.put(command, timeout=1.0)
+            return True
+        except Full:
+            return False
 
     def _build_speed_command(self, speed: float) -> bytes:
         """
@@ -136,6 +163,56 @@ class FlyWheel:
         """
         断开与飞轮的连接
         """
+        # 停止通信线程
+        self._running = False
+        if hasattr(self, '_comm_thread'):
+            self._comm_thread.join()
+        
+        # 关闭串口
         if self.serial.is_open:
             self.serial.close()
         self._is_connected = False
+
+    def _communication_loop(self) -> None:
+        """
+        通信循环
+        """
+        while self._running:
+            try:
+                if not self._is_connected:
+                    self.logger.warning("飞轮未连接")
+                    time.sleep(1)
+                    continue
+
+                try:
+                    command = self.queue.get(timeout=1/self.thread_frequency)
+                    self.serial.write(command)
+                except Empty:
+                    continue
+                except serial.SerialException as e:
+                    self.logger.error(f"串口通信错误: {e}")
+                    self._is_connected = False
+                    continue
+
+                # 固定频率
+                time.sleep(1/self.thread_frequency)
+                
+                # 处理响应
+                response = self.serial.read_all()
+                if len(response) == 8:
+                    continue
+                elif len(response) == 32:
+                    try:
+                        telemetry = self._process_data(response)
+                        if self.callback:
+                            self.callback(telemetry)
+                        self.telemetry.append((time.time(), telemetry))
+                    except Exception as e:
+                        print(f"处理遥测数据错误: {str(e)}")
+                else:
+                    # 清空缓冲区
+                    self.serial.reset_input_buffer()
+
+            except Exception as e:
+                self.logger.exception(f"通信循环错误: {e}")
+                time.sleep(1/self.thread_frequency)

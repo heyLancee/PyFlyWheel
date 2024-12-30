@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import struct
 from pyflywheel.core import FlyWheel
 
+
 class TestFlyWheel(unittest.TestCase):
     """
     飞轮控制类测试
@@ -30,6 +31,10 @@ class TestFlyWheel(unittest.TestCase):
         """
         测试后清理
         """
+        # 确保通信线程停止
+        self.flywheel.disconnect()
+        
+        # 停止mock
         self.mock_serial_patcher.stop()
         
     def test_init(self):
@@ -177,7 +182,7 @@ class TestFlyWheel(unittest.TestCase):
         
         # 设置一个测试速度值 (100.0)
         speed_bytes = struct.pack('>f', 100.0)
-        test_data[8:12] = reversed(speed_bytes)  # flywheel_speed_feedback
+        test_data[8:12] = speed_bytes  # flywheel_speed_feedback
         
         # 测试数据处理
         result = self.flywheel._process_data(test_data)
