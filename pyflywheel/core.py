@@ -9,6 +9,9 @@ import threading
 from typing import Dict, Callable
 from queue import Queue, Empty, Full
 import logging
+import pickle
+import json
+from datetime import datetime
 
 
 class FlyWheel:
@@ -236,6 +239,40 @@ class FlyWheel:
         if self.serial.is_open:
             self.serial.close()
         self._is_connected = False
+
+    def save_telemetry(self, filename: str, format: str = 'json') -> bool:
+        """
+        保存遥测数据到文件
+
+        Args:
+            filename: 保存文件的路径
+            format: 保存格式，支持 'json' 或 'csv'
+
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            if format.lower() == 'json':
+                # 转换成可序列化的格式
+                telemetry_list = []
+                for timestamp, data in self.telemetry:
+                    telemetry_dict = {
+                        'timestamp': datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S.%f'),
+                        'data': data
+                    }
+                    telemetry_list.append(telemetry_dict)
+                
+                with open(filename, 'w', encoding='utf-8') as f:
+                    json.dump(telemetry_list, f, indent=4, ensure_ascii=False)
+            else:
+                raise ValueError("不支持的格式，请使用 'json' 或 'csv'")
+            
+            self.logger.info(f"遥测数据已保存到 {filename}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"保存遥测数据失败: {str(e)}")
+            return False
 
     def _communication_loop(self) -> None:
         """
