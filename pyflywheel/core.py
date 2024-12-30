@@ -5,6 +5,8 @@ import serial
 import time
 import struct
 from typing import Dict
+from multiprocessing import Value
+
 
 class FlyWheel:
     """
@@ -52,11 +54,7 @@ class FlyWheel:
         # 发送轮询命令
         command = bytes([0xEB, 0x90, 0xDD, 0x00, 0x00, 0x00, 0x00, 0xDD])
         self.serial.write(command)
-        time.sleep(0.1)  # 等待响应
-        
-        # 读取32字节响应
-        response = self.serial.read(32)
-        return self._process_data(response)
+        return self._process_response()
 
     def set_speed(self, speed: float) -> bool:
         """
@@ -70,11 +68,20 @@ class FlyWheel:
 
         command = self._build_speed_command(speed)
         self.serial.write(command)
-        time.sleep(0.1)
-        
-        # 读取8字节响应
-        response = self.serial.read(8)
-        return len(response) == 8
+        return self._process_response()
+    
+    # 统一处理response
+    def _process_response(self) -> Dict:
+        """
+        处理8字节的响应
+        """
+        response = self.serial.read(32)
+        if len(response) == 8:
+            return {}
+        elif len(response) == 32:
+            return self._process_data(response)
+        else:
+            raise ValueError("响应长度错误")
 
     def _build_speed_command(self, speed: float) -> bytes:
         """
@@ -109,10 +116,10 @@ class FlyWheel:
         telemetry = {
             'header': '0x' + ' '.join([f'{x:02X}' for x in data[0:3]]),
             'last_command': f'0x{data[3]:02X}',
-            'control_target': struct.unpack('>f', bytes(reversed(data[4:8])))[0],
-            'flywheel_speed_feedback': struct.unpack('>f', bytes(reversed(data[8:12])))[0],
-            'flywheel_current_feedback': struct.unpack('>f', bytes(reversed(data[12:16])))[0],
-            'acceleration_feedback': struct.unpack('>f', bytes(reversed(data[16:20])))[0],
+            'control_target': struct.unpack('>f', bytes(data[4:8]))[0],
+            'flywheel_speed_feedback': struct.unpack('>f', bytes(data[8:12]))[0],
+            'flywheel_current_feedback': struct.unpack('>f', bytes(data[12:16]))[0],
+            'acceleration_feedback': struct.unpack('>f', bytes(data[16:20]))[0],
             'command_response_count': data[20],
             'telemetry_wheel_command_count': data[21],
             'error_command_count': data[22],
