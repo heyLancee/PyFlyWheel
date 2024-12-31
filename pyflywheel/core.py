@@ -19,7 +19,7 @@ class FlyWheel:
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
     def __init__(self, port: str, baudrate: int, inertia: float = 0.0001608,  
-                 queue_size: int = 10, thread_frequency: int = 100, callback: Callable[[Dict, Dict], None] = None, 
+                 queue_size: int = 10, communication_frequency: int = 100, callback: Callable[[Dict, Dict], None] = None, 
                  max_telemetry_size: int = 1000, 
                  auto_polling: bool = False, polling_frequency: float = 10.0):
         """
@@ -29,7 +29,7 @@ class FlyWheel:
             port: RS232端口名称
             baudrate: 波特率
             queue_size: 通信队列大小
-            thread_frequency: 通信线程频率
+            communication_frequency: 通信线程频率
             callback: 回调函数,接收遥测数据字典,可用于实时控制转速
             max_telemetry_size: 遥测数据最大存储数量
             auto_polling: 是否自动开启轮询线程
@@ -46,7 +46,7 @@ class FlyWheel:
         self.queue = Queue(maxsize=queue_size)
 
         # 通信线程频率
-        self.thread_frequency = thread_frequency
+        self.communication_frequency = communication_frequency
 
         # 启动一个线程，处理与飞轮的通信
         self._comm_thread = None
@@ -106,7 +106,7 @@ class FlyWheel:
         self._comm_thread = threading.Thread(target=self._communication_loop, daemon=True)
         self._comm_thread.start()
         
-        self.logger.info(f"已启动通信线程, 频率: {self.thread_frequency}Hz")
+        self.logger.info(f"已启动通信线程, 频率: {self.communication_frequency}Hz")
 
         # 如果设置了自动轮询，则启动轮询线程
         if self.auto_polling:
@@ -308,7 +308,7 @@ class FlyWheel:
         """
         通信循环，使用时间累加器确保固定频率
         """
-        period = 1.0 / self.thread_frequency
+        period = 1.0 / self.communication_frequency
         next_time = time.perf_counter() + period
         
         while self._running:
