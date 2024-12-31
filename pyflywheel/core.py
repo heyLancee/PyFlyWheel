@@ -18,8 +18,8 @@ class FlyWheel:
     """
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
-    def __init__(self, inertia: float = 0.001608, port: str = 'COM5', baudrate: int = 115200, 
-                 queue_size: int = 10, thread_frequency: int = 100, callback: Callable[[Dict], None] = None, 
+    def __init__(self, inertia: float = 0.0001608, port: str = 'COM5', baudrate: int = 115200, 
+                 queue_size: int = 10, thread_frequency: int = 100, callback: Callable[[Dict, Dict], None] = None, 
                  max_telemetry_size: int = 1000, 
                  auto_polling: bool = False, polling_frequency: float = 10.0):
         """
@@ -314,7 +314,6 @@ class FlyWheel:
         while self._running:
             try:
                 if not self._is_connected:
-                    self.logger.info("飞轮未连接")
                     time.sleep(1)
                     continue
 
@@ -346,8 +345,9 @@ class FlyWheel:
         if len(response) == 32:
             telemetry = self._process_data(response)
             if self.callback:
-                self.callback(telemetry)
-            # self.telemetry.append((time.time(), telemetry))
+                last_telemetry = self.telemetry[-1][1] if self.telemetry else telemetry
+                self.callback(telemetry, last_telemetry)
+            self.telemetry.append((time.time(), telemetry))
         elif len(response) != 8:
             self.serial.reset_input_buffer()
             self.logger.error(f"收到未知长度的响应: {len(response)}")
@@ -355,6 +355,7 @@ class FlyWheel:
     def _wait_for_next_cycle(self, next_time: float, period: float) -> float:
         current_time = time.perf_counter()
         sleep_time = next_time - current_time
+        self.logger.debug(f"等待时间: {sleep_time}")
         if sleep_time > 0:
             time.sleep(sleep_time)
         current_time = time.perf_counter()
@@ -372,7 +373,6 @@ class FlyWheel:
         while self._polling and self._running:
             try:
                 if not self._is_connected:
-                    self.logger.warning("飞轮未连接，轮询暂停")
                     time.sleep(1)
                     next_time = time.perf_counter() + period  # 重置时间
                     continue
@@ -385,7 +385,6 @@ class FlyWheel:
                     
             except Exception as e:
                 self.logger.error(f"轮询过程发生错误: {str(e)}")
-                time.sleep(0.1)  # 错误发生时短暂等待
 
                 
     def _send_command(self, command: bytes) -> bool:
