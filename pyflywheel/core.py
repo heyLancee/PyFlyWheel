@@ -235,6 +235,7 @@ class FlyWheel:
             raise ValueError("数据长度必须为32字节")
 
         telemetry = {
+            'timestamp': time.time(),
             'header': '0x' + ' '.join([f'{x:02X}' for x in data[0:3]]),
             'last_command': f'0x{data[3]:02X}',
             'control_target': struct.unpack('>f', bytes(data[4:8]))[0],
@@ -285,12 +286,8 @@ class FlyWheel:
             if format.lower() == 'json':
                 # 转换成可序列化的格式
                 telemetry_list = []
-                for timestamp, data in self.telemetry:
-                    telemetry_dict = {
-                        'timestamp': datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S.%f'),
-                        'data': data
-                    }
-                    telemetry_list.append(telemetry_dict)
+                for data in self.telemetry:
+                    telemetry_list.append(data)
                 
                 with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(telemetry_list, f, indent=4, ensure_ascii=False)
@@ -347,7 +344,7 @@ class FlyWheel:
             if self.callback:
                 last_telemetry = self.telemetry[-1][1] if self.telemetry else telemetry
                 self.callback(telemetry, last_telemetry)
-            self.telemetry.append((time.time(), telemetry))
+            self.telemetry.append(telemetry)
         elif len(response) != 8:
             self.serial.reset_input_buffer()
             self.logger.error(f"收到未知长度的响应: {len(response)}")
