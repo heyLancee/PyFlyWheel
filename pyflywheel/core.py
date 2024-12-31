@@ -234,6 +234,12 @@ class FlyWheel:
         """
         self._running = False  # 这会终止所有线程
         self._polling = False  # 为了明确性,也设置轮询标志
+
+        # 等待通信线程完成
+        if self._comm_thread.is_alive():
+            self._comm_thread.join()
+        if self._polling_thread and self._polling_thread.is_alive():
+            self._polling_thread.join()
         
         if self.serial.is_open:
             self.serial.close()
@@ -275,35 +281,35 @@ class FlyWheel:
 
     def _communication_loop(self) -> None:
         """
-        通信循环
+        通信循环，使用时间累加器确保固定频率
         """
+        period = 1.0 / self.thread_frequency  # 计算通信周期
+        next_time = time.perf_counter() + period  # 使用高精度计时器
+        
         while self._running:
             try:
                 if not self._is_connected:
                     self.logger.warning("飞轮未连接")
                     time.sleep(1)
+                    next_time = time.perf_counter() + period  # 重置时间
                     continue
 
                 # 使用条件变量等待命令
                 with self._comm_condition:
-                    while self.queue.empty() and self._running:
-                        self._comm_condition.wait(timeout=1.0)  # 设置超时防止永久阻塞
-                    
-                    if not self._running:  # 检查是否需要退出
+                    self._comm_condition.wait_for(lambda: not self.queue.empty() or not self._running, timeout=period)
+                        
+                    if not self._running:
                         break
                         
                     try:
-                        command = self.queue.get_nowait()  # 不需要timeout了
+                        command = self.queue.get_nowait()
                         self.serial.write(command)
-                    except Empty:  # 以防万一
-                        continue
+                    except Empty:
+                        pass
                     except serial.SerialException as e:
                         self.logger.error(f"串口通信错误: {e}")
                         self._is_connected = False
                         continue
-
-                # 固定频率
-                time.sleep(1/self.thread_frequency)
                 
                 # 处理响应
                 response = self.serial.read_all()
@@ -320,10 +326,26 @@ class FlyWheel:
                 else:
                     # 清空缓冲区
                     self.serial.reset_input_buffer()
+                    self.logger.error(f"收到未知长度的响应: {len(response)}")
+                
+                # 精确等待到下一个周期
+                current_time = time.perf_counter()
+                sleep_time = next_time - current_time
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                
+                # 计算下一次执行时间
+                next_time += period
+                
+                # 如果延迟太多，重置时间基准
+                if time.perf_counter() - next_time > period:
+                    self.logger.warning("通信循环延迟过大，重置时间基准")
+                    next_time = time.perf_counter() + period
 
             except Exception as e:
                 self.logger.exception(f"通信循环错误: {e}")
-                time.sleep(1/self.thread_frequency)
+                time.sleep(0.1)  # 错误发生时短暂等待
+                next_time = time.perf_counter() + period  # 重置时间
 
     def start_polling(self) -> bool:
         """
@@ -341,24 +363,44 @@ class FlyWheel:
         self._polling_thread.start()
         self.logger.info(f"已启动轮询线程，频率: {self._polling_frequency}Hz")
         return True
-
+    
     def _polling_loop(self) -> None:
         """
-        轮询循环
+        轮询循环，使用时间累加器确保固定频率
         """
+        period = 1.0 / self._polling_frequency  # 计算周期
+        next_time = time.perf_counter() + period  # 使用高精度计时器
+
         while self._polling and self._running:
             try:
                 if not self._is_connected:
                     self.logger.warning("飞轮未连接，轮询暂停")
                     time.sleep(1)
+                    next_time = time.perf_counter() + period  # 重置时间
                     continue
                 
+                # 发送轮询命令
                 self.poll_status()
-                time.sleep(1 / self._polling_frequency)
                 
+                # 精确等待到下一个周期
+                current_time = time.perf_counter()
+                sleep_time = next_time - current_time
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                
+                # 计算下一次执行时间
+                next_time += period
+                
+                # 如果延迟太多，重置时间基准以避免累积延迟
+                if time.perf_counter() - next_time > period:
+                    self.logger.warning("轮询延迟过大，重置时间基准")
+                    next_time = time.perf_counter() + period
+                    
             except Exception as e:
                 self.logger.error(f"轮询过程发生错误: {str(e)}")
-                time.sleep(1)
+                time.sleep(0.1)  # 错误发生时短暂等待
+                next_time = time.perf_counter() + period  # 重置时间
+
                 
     def _send_command(self, command: bytes) -> bool:
         """
