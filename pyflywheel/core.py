@@ -6,7 +6,7 @@ import serial
 import time
 import struct
 import threading
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 from queue import Queue, Empty, Full
 import logging
 import pickle
@@ -283,69 +283,68 @@ class FlyWheel:
         """
         通信循环，使用时间累加器确保固定频率
         """
-        period = 1.0 / self.thread_frequency  # 计算通信周期
-        next_time = time.perf_counter() + period  # 使用高精度计时器
-        
+        period = 1.0 / self.thread_frequency
+        next_time = time.perf_counter() + period
+
         while self._running:
             try:
                 if not self._is_connected:
                     self.logger.warning("飞轮未连接")
                     time.sleep(1)
-                    next_time = time.perf_counter() + period  # 重置时间
+                    next_time = time.perf_counter() + period
                     continue
 
-                # 使用条件变量等待命令
-                with self._comm_condition:
-                    self._comm_condition.wait_for(lambda: not self.queue.empty() or not self._running, timeout=period)
-                        
-                    if not self._running:
-                        break
-                        
-                    try:
-                        command = self.queue.get_nowait()
-                        self.serial.write(command)
-                    except Empty:
-                        pass
-                    except serial.SerialException as e:
-                        self.logger.error(f"串口通信错误: {e}")
-                        self._is_connected = False
-                        continue
-                
-                # 处理响应
-                response = self.serial.read_all()
-                if len(response) == 8:
-                    continue
-                elif len(response) == 32:
-                    try:
-                        telemetry = self._process_data(response)
-                        if self.callback:
-                            self.callback(telemetry)
-                        self.telemetry.append((time.time(), telemetry))
-                    except Exception as e:
-                        print(f"处理遥测数据错误: {str(e)}")
-                else:
-                    # 清空缓冲区
-                    self.serial.reset_input_buffer()
-                    self.logger.error(f"收到未知长度的响应: {len(response)}")
-                
-                # 精确等待到下一个周期
-                current_time = time.perf_counter()
-                sleep_time = next_time - current_time
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                
-                # 计算下一次执行时间
-                next_time += period
-                
-                # 如果延迟太多，重置时间基准
-                if time.perf_counter() - next_time > period:
-                    self.logger.warning("通信循环延迟过大，重置时间基准")
+                command = self._wait_for_command(period)
+                if command is None:
                     next_time = time.perf_counter() + period
+                    continue
+
+                self.serial.write(command)
+                self._process_response()
+
+                next_time = self._wait_for_next_cycle(next_time, period)
+                
 
             except Exception as e:
                 self.logger.exception(f"通信循环错误: {e}")
-                time.sleep(0.1)  # 错误发生时短暂等待
-                next_time = time.perf_counter() + period  # 重置时间
+                self._reset_next_time(period)
+
+    def _wait_for_command(self, period: float) -> Optional[bytes]:
+        with self._comm_condition:
+            self._comm_condition.wait_for(lambda: not self.queue.empty() or not self._running, timeout=period)
+            if not self._running:
+                return None
+            try:
+                return self.queue.get_nowait()
+            except Empty:
+                return None
+
+    def _process_response(self, timeout: float = 0.1) -> None:
+        response = self.serial.read_all()
+        start_time = time.perf_counter()
+        while len(response) == 0:
+            response = self.serial.read_all()
+            if time.perf_counter() - start_time > timeout:
+                return
+        if len(response) == 32:
+            telemetry = self._process_data(response)
+            if self.callback:
+                self.callback(telemetry)
+            self.telemetry.append((time.time(), telemetry))
+        elif len(response) != 8:
+            self.serial.reset_input_buffer()
+            self.logger.error(f"收到未知长度的响应: {len(response)}")
+
+    def _wait_for_next_cycle(self, next_time: float, period: float) -> float:
+        current_time = time.perf_counter()
+        sleep_time = next_time - current_time
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+        next_time += period
+        if time.perf_counter() - next_time > period:
+            self.logger.warning("轮询延迟过大，重置时间基准")
+            next_time = time.perf_counter() + period
+        return next_time
 
     def start_polling(self) -> bool:
         """
@@ -383,18 +382,7 @@ class FlyWheel:
                 self.poll_status()
                 
                 # 精确等待到下一个周期
-                current_time = time.perf_counter()
-                sleep_time = next_time - current_time
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                
-                # 计算下一次执行时间
-                next_time += period
-                
-                # 如果延迟太多，重置时间基准以避免累积延迟
-                if time.perf_counter() - next_time > period:
-                    self.logger.warning("轮询延迟过大，重置时间基准")
-                    next_time = time.perf_counter() + period
+                next_time = self._wait_for_next_cycle(next_time, period)
                     
             except Exception as e:
                 self.logger.error(f"轮询过程发生错误: {str(e)}")
