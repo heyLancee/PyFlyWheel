@@ -18,7 +18,7 @@ class FlyWheel:
     """
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
-    def __init__(self, inertia: float = 0.0001608, port: str = 'COM5', baudrate: int = 115200, 
+    def __init__(self, port: str, baudrate: int, inertia: float = 0.0001608,  
                  queue_size: int = 10, thread_frequency: int = 100, callback: Callable[[Dict, Dict], None] = None, 
                  max_telemetry_size: int = 1000, 
                  auto_polling: bool = False, polling_frequency: float = 10.0):
