@@ -102,6 +102,9 @@ class FlyWheel:
             return False
         
     def start(self):
+        """
+        启动飞轮通信和轮询
+        """
         self._running = True
         self._comm_thread = threading.Thread(target=self._communication_loop, daemon=True)
         self._comm_thread.start()
@@ -120,6 +123,9 @@ class FlyWheel:
             self.logger.info(f"已启动轮询线程，频率: {self._polling_frequency}Hz")
 
     def stop(self):
+        """
+        停止飞轮通信和轮询
+        """
         self._running = False
         self._polling = False
         if self._comm_thread is not None:
@@ -326,6 +332,9 @@ class FlyWheel:
                 self.logger.exception(f"通信循环错误: {e}")
 
     def _wait_for_command(self, period: float) -> Optional[bytes]:
+        """
+        等待命令
+        """
         with self._comm_condition:
             self._comm_condition.wait_for(lambda: not self.queue.empty() or not self._running, timeout=period)
             if not self._running:
@@ -336,6 +345,9 @@ class FlyWheel:
                 return None
 
     def _process_response(self) -> None:
+        """
+        处理飞轮的响应
+        """
         response = self.serial.read_all()
         if len(response) == 0:
             return
@@ -350,6 +362,9 @@ class FlyWheel:
             self.logger.error(f"收到未知长度的响应: {len(response)}")
 
     def _wait_for_next_cycle(self, next_time: float, period: float) -> float:
+        """
+        等待下一个周期
+        """
         current_time = time.perf_counter()
         sleep_time = next_time - current_time
         self.logger.debug(f"等待时间: {sleep_time}")
