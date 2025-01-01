@@ -17,7 +17,7 @@ class FlyWheel:
     """
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
-    def __init__(self, port: str, baudrate: int, inertia: float = 0.0001608,  
+    def __init__(self, port: str, baudrate: int, timeout: int = 1, inertia: float = 0.0001608,  
                  queue_size: int = 10, communication_frequency: int = 100, callback: Callable[[Dict, Dict], None] = None, 
                  max_telemetry_size: int = 1000, 
                  auto_polling: bool = False, polling_frequency: float = 10.0):
@@ -27,6 +27,7 @@ class FlyWheel:
         Args:
             port: RS232端口名称
             baudrate: 波特率
+            timeout: 串口超时时间
             queue_size: 通信队列大小
             communication_frequency: 通信线程频率
             callback: 回调函数,接收遥测数据字典,可用于实时控制转速
@@ -34,37 +35,41 @@ class FlyWheel:
             auto_polling: 是否自动开启轮询线程
             polling_frequency: 轮询频率，单位Hz
         """
-        # 惯量
         self.inertia = inertia
+
         self.port = port
         self.baudrate = baudrate
+        self.timeout = timeout
+
         self.logger = logging.getLogger(__name__)
         
-        # 添加条件变量
-        self._comm_condition = threading.Condition()
-        self.queue = Queue(maxsize=queue_size)
+        self.cmd_queue = Queue(maxsize=queue_size)
+        self.resp_len_queue = Queue(maxsize=queue_size)
 
-        # 通信线程频率
-        self.communication_frequency = communication_frequency
-
-        # 启动一个线程，处理与飞轮的通信
-        self._comm_thread = None
-
-        # 回调函数，当收到32字节的遥测数据时，调用回调函数
-        self.callback = callback
-
-        # 存储遥测数据
-        self.telemetry = deque(maxlen=max_telemetry_size)
-
-        # 轮询相关属性
+        self._communication_frequency = communication_frequency
         self._polling_frequency = polling_frequency
+
+        self._comm_thread = None
         self._polling_thread = None
+        self._resp_thread = None
+
         self.auto_polling = auto_polling
 
         self._polling = False
         self._running = False
         self._is_connected = False
 
+        self.callback = callback
+        self.telemetry = deque(maxlen=max_telemetry_size)
+
+        self.serial = serial.Serial(
+            port=self.port,
+            baudrate=self.baudrate,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=timeout
+        )
 
     def __del__(self):
         """
@@ -83,14 +88,6 @@ class FlyWheel:
             ConnectionError: 当连接失败时
         """
         try:
-            self.serial = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                timeout=1
-            )
             if not self.serial.is_open:
                 self.serial.open()
             self._is_connected = True
@@ -105,10 +102,16 @@ class FlyWheel:
         启动飞轮通信和轮询
         """
         self._running = True
+        
+        # 启动通信线程
         self._comm_thread = threading.Thread(target=self._communication_loop, daemon=True)
         self._comm_thread.start()
+        self.logger.info(f"已启动通信线程, 频率: {self._communication_frequency}Hz")
         
-        self.logger.info(f"已启动通信线程, 频率: {self.communication_frequency}Hz")
+        # 启动响应处理线程
+        self._resp_thread = threading.Thread(target=self._response_loop, daemon=True)
+        self._resp_thread.start()
+        self.logger.info(f"已启动响应处理线程, 频率: {self._communication_frequency}Hz")
 
         # 如果设置了自动轮询，则启动轮询线程
         if self.auto_polling:
@@ -127,11 +130,14 @@ class FlyWheel:
         """
         self._running = False
         self._polling = False
+        
+        # 等待所有线程结束
         if self._comm_thread is not None:
             self._comm_thread.join()
+        if self._resp_thread is not None:
+            self._resp_thread.join()
         if self._polling_thread is not None:
             self._polling_thread.join()
-
 
     def poll_status(self) -> bool:
         """
@@ -348,9 +354,9 @@ class FlyWheel:
 
     def _communication_loop(self) -> None:
         """
-        通信循环，使用时间累加器确保固定频率
+        通信循环，只负责发送命令
         """
-        period = 1.0 / self.communication_frequency
+        period = 1.0 / self._communication_frequency
         next_time = time.perf_counter() + period
         
         while self._running:
@@ -358,47 +364,72 @@ class FlyWheel:
                 if not self._is_connected:
                     time.sleep(1)
                     continue
-
-                command = self._wait_for_command(period)
-                if command is None:
+                
+                try:
+                    command = self.cmd_queue.get(timeout=self.timeout)
+                except Empty:
                     continue
 
                 self.serial.write(command)
                 
+                # 根据命令类型设置预期响应长度
+                if command[2] == int('0xDD', 16):
+                    self.resp_len_queue.put(32)
+                else:
+                    self.resp_len_queue.put(8)
+                    
                 next_time = self._wait_for_next_cycle(next_time, period)
-                self._process_response()
+
             except Exception as e:
                 self.logger.exception(f"通信循环错误: {e}")
 
-    def _wait_for_command(self, period: float) -> Optional[bytes]:
+    def _response_loop(self) -> None:
         """
-        等待命令
+        响应处理循环，专门处理串口响应数据
         """
-        with self._comm_condition:
-            self._comm_condition.wait_for(lambda: not self.queue.empty() or not self._running, timeout=period)
-            if not self._running:
-                return None
-            try:
-                return self.queue.get_nowait()
-            except Empty:
-                return None
+        period = 1.0 / self._communication_frequency  # 使用与通信相同的频率
+        next_time = time.perf_counter() + period
 
-    def _process_response(self) -> None:
-        """
-        处理飞轮的响应
-        """
-        response = self.serial.read_all()
-        if len(response) == 0:
-            return
-        if len(response) == 32:
-            telemetry = self._process_data(response)
-            if self.callback:
-                last_telemetry = self.telemetry[-1] if self.telemetry else telemetry
-                self.callback(telemetry, last_telemetry)
-            self.telemetry.append(telemetry)
-        elif len(response) != 8:
-            self.serial.reset_input_buffer()
-            self.logger.error(f"收到未知长度的响应: {len(response)}")
+        while self._running:
+            try:
+                if not self._is_connected:
+                    time.sleep(1)
+                    next_time = time.perf_counter() + period  # 重置时间
+                    continue
+                    
+                # 获取预期响应长度
+                try:
+                    resp_len = self.resp_len_queue.get(timeout=self.timeout)
+                except Empty:
+                    continue
+                
+                # 读取指定长度的响应
+                if self.serial.in_waiting < resp_len:
+                    continue
+                response = self.serial.read(resp_len)
+                
+                if len(response) != resp_len:
+                    self.logger.error(f"响应长度不匹配: 预期{resp_len}字节, 实际接收{len(response)}字节")
+                    self.serial.reset_input_buffer()
+                    next_time = self._wait_for_next_cycle(next_time, period)
+                    continue
+                
+                # 处理32字节的遥测数据
+                if len(response) == 32:
+                    try:
+                        telemetry = self._process_data(response)
+                        if self.callback:
+                            last_telemetry = self.telemetry[-1] if self.telemetry else telemetry
+                            self.callback(telemetry, last_telemetry)
+                        self.telemetry.append(telemetry)
+                    except Exception as e:
+                        self.logger.error(f"处理遥测数据错误: {str(e)}")
+                
+                next_time = self._wait_for_next_cycle(next_time, period)
+
+            except Exception as e:
+                self.logger.exception(f"响应处理循环错误: {e}")
+                next_time = self._wait_for_next_cycle(next_time, period)
 
     def _wait_for_next_cycle(self, next_time: float, period: float) -> float:
         """
@@ -406,7 +437,6 @@ class FlyWheel:
         """
         current_time = time.perf_counter()
         sleep_time = next_time - current_time
-        self.logger.debug(f"等待时间: {sleep_time}")
         if sleep_time > 0:
             time.sleep(sleep_time)
         current_time = time.perf_counter()
@@ -440,7 +470,7 @@ class FlyWheel:
                 
     def _send_command(self, command: bytes) -> bool:
         """
-        发送命令到队列并通知通信线程
+        发送命令到队列
         
         Args:
             command: 要发送的命令字节序列
@@ -449,9 +479,7 @@ class FlyWheel:
             bool: 是否成功发送
         """
         try:
-            self.queue.put_nowait(command)
-            with self._comm_condition:
-                self._comm_condition.notify()
+            self.cmd_queue.put_nowait(command)
             return True
         except Full:
             self.logger.error("命令队列已满")
