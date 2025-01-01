@@ -354,7 +354,7 @@ class FlyWheel:
         if len(response) == 32:
             telemetry = self._process_data(response)
             if self.callback:
-                last_telemetry = self.telemetry[-1][1] if self.telemetry else telemetry
+                last_telemetry = self.telemetry[-1] if self.telemetry else telemetry
                 self.callback(telemetry, last_telemetry)
             self.telemetry.append(telemetry)
         elif len(response) != 8:
