@@ -9,7 +9,6 @@ import threading
 from typing import Dict, Callable, Optional
 from queue import Queue, Empty, Full
 import logging
-import pickle
 import json
 from datetime import datetime
 
@@ -189,6 +188,25 @@ class FlyWheel:
         command = self._build_torque_command(torque)
         return self._send_command(command)
 
+    def set_current(self, current: float) -> bool:
+        """
+        设置飞轮电流
+        
+        Args:
+            current: 目标电流，单位 mA，范围 -1500 到 +1500 mA
+            
+        Returns:
+            bool: 是否成功将命令放入队列
+            
+        Raises:
+            ValueError: 当电流超出范围时
+        """
+        if not -1500 <= current <= 1500:
+            raise ValueError("电流必须在 -1500 到 +1500 mA 之间")
+        
+        command = self._build_current_command(current)
+        return self._send_command(command)
+
     def _build_speed_command(self, speed: float) -> bytes:
         """
         构建速度命令包
@@ -229,6 +247,27 @@ class FlyWheel:
         checksum = (command_code + sum(torque_bytes)) & 0xFF
         
         return header + bytes([command_code]) + torque_bytes + bytes([checksum])
+
+    def _build_current_command(self, current: float) -> bytes:
+        """
+        构建电流命令包
+        
+        Args:
+            current: 目标电流，单位 mA
+            
+        Returns:
+            bytes: 命令字节序列
+        """
+        header = bytes([0xEB, 0x90])
+        command_code = 0xD1
+        
+        # 将电流转换为IEEE 754格式
+        current_bytes = struct.pack('>f', float(current))
+        
+        # 计算校验和
+        checksum = (command_code + sum(current_bytes)) & 0xFF
+        
+        return header + bytes([command_code]) + current_bytes + bytes([checksum])
 
     def _process_data(self, data: bytes) -> Dict:
         """
