@@ -11,13 +11,14 @@ from queue import Queue, Empty, Full
 import logging
 import json
 from datetime import datetime
+from dataclasses import dataclass
 
 
 class FlyWheel:
     """
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
-    def __init__(self, port: str, baudrate: int, timeout: int = 1, inertia: float = 0.0001608,  
+    def __init__(self, port: str, baudrate: int, timeout: int = 1, inertia: float = 0.001608,  
                  queue_size: int = 10, communication_frequency: int = 100, callback: Callable[[Dict, Dict], None] = None, 
                  max_telemetry_size: int = 1000, 
                  auto_polling: bool = False, polling_frequency: float = 10.0):
@@ -275,7 +276,46 @@ class FlyWheel:
         
         return header + bytes([command_code]) + current_bytes + bytes([checksum])
 
-    def _process_data(self, data: bytes) -> Dict:
+    @dataclass
+    class TelemetryData:
+        """
+        遥测数据类，用于封装飞轮的遥测数据
+        """
+        timestamp: float
+        header: str
+        last_command: str
+        control_target: float
+        flywheel_speed_feedback: float
+        flywheel_current_feedback: float
+        acceleration_feedback: float
+        command_response_count: int
+        telemetry_wheel_command_count: int
+        error_command_count: int
+        motherboard_current: int
+        temperature: int
+        single_motor_status: int
+        reserved: str
+        checksum: int
+
+        def print_telemetry(self):
+            print(f"timestamp: {self.timestamp}")
+            print(f"header: {self.header}")
+            print(f"last_command: {self.last_command}")
+            print(f"control_target: {self.control_target}")
+            print(f"flywheel_speed_feedback(rpm): {self.flywheel_speed_feedback}")
+            print(f"flywheel_current_feedback(mA): {self.flywheel_current_feedback}")
+            print(f"acceleration_feedback: {self.acceleration_feedback}")
+            print(f"command_response_count: {self.command_response_count}")
+            print(f"telemetry_wheel_command_count: {self.telemetry_wheel_command_count}")
+            print(f"error_command_count: {self.error_command_count}")
+            print(f"motherboard_current(mA): {self.motherboard_current}")
+            print(f"temperature(C): {self.temperature}")
+            print(f"single_motor_status: {self.single_motor_status}")
+            print(f"reserved: {self.reserved}")
+            print(f"checksum: {self.checksum}")
+
+
+    def _process_data(self, data: bytes) -> TelemetryData:
         """
         处理32字节的遥测数据
         
@@ -285,23 +325,23 @@ class FlyWheel:
         if len(data) != 32:
             raise ValueError("数据长度必须为32字节")
 
-        telemetry = {
-            'timestamp': time.time(),
-            'header': '0x' + ' '.join([f'{x:02X}' for x in data[0:3]]),
-            'last_command': f'0x{data[3]:02X}',
-            'control_target': struct.unpack('>f', bytes(data[4:8]))[0],
-            'flywheel_speed_feedback': struct.unpack('>f', bytes(data[8:12]))[0],
-            'flywheel_current_feedback': struct.unpack('>f', bytes(data[12:16]))[0],
-            'acceleration_feedback': struct.unpack('>f', bytes(data[16:20]))[0],
-            'command_response_count': data[20],
-            'telemetry_wheel_command_count': data[21],
-            'error_command_count': data[22],
-            'motherboard_current': int.from_bytes(data[23:25], byteorder='big'),
-            'temperature': int.from_bytes(bytes([data[25]]), byteorder='big', signed=True),
-            'single_motor_status': data[26],
-            'reserved': data[27:31].hex(),
-            'checksum': data[31]
-        }
+        telemetry = FlyWheel.TelemetryData(
+            timestamp=time.time(),
+            header='0x' + ' '.join([f'{x:02X}' for x in data[0:3]]),
+            last_command=f'0x{data[3]:02X}',
+            control_target=struct.unpack('>f', bytes(data[4:8]))[0],
+            flywheel_speed_feedback=struct.unpack('>f', bytes(data[8:12]))[0],
+            flywheel_current_feedback=struct.unpack('>f', bytes(data[12:16]))[0],
+            acceleration_feedback=struct.unpack('>f', bytes(data[16:20]))[0],
+            command_response_count=data[20],
+            telemetry_wheel_command_count=data[21],
+            error_command_count=data[22],
+            motherboard_current=int.from_bytes(data[23:25], byteorder='big'),
+            temperature=int.from_bytes(bytes([data[25]]), byteorder='big', signed=True),
+            single_motor_status=data[26],
+            reserved=data[27:31].hex(),
+            checksum=data[31]
+        )
         
         return telemetry
 
