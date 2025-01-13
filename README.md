@@ -2,6 +2,10 @@
 
 PyFlyWheel is a python module that provides a simple interface to the FlyWheel experiment.
 
+## framework
+
+![Framework of the module](resources/images/framework.png)
+
 ## install
 
 the module has not been published to pypi, so you need to install it manually. The subdirectory pyflywheel is the module, which should be moved to the python module path or working directory.
