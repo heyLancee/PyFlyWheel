@@ -192,8 +192,8 @@ class TestFlyWheel(unittest.TestCase):
         result = self.flywheel._process_data(test_data)
         
         # 验证结果
-        self.assertEqual(result['header'], '0xEB 90 DD')
-        self.assertAlmostEqual(result['flywheel_speed_feedback'], 100.0)
+        self.assertEqual(result.header, '0xEB 90 DD')
+        self.assertAlmostEqual(result.flywheel_speed_feedback, 100.0)
         
     def test_disconnect(self):
         """
