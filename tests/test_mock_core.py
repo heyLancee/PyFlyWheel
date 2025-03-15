@@ -1,6 +1,9 @@
 """
 飞轮控制模块测试套件
 """
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import unittest
 from unittest.mock import Mock, patch
 import struct

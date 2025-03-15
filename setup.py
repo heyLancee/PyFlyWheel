@@ -1,3 +1,11 @@
+'''
+Author: Amadeus
+Date: 2025-03-15 15:34:27
+LastEditors: Amadeus
+LastEditTime: 2025-03-15 15:49:06
+FilePath: \PyFlyWheel\setup.py
+Description: 
+'''
 from setuptools import setup, find_packages
 
 setup(
