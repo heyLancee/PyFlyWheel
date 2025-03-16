@@ -11,7 +11,23 @@ import scipy.io as sio
 import numpy as np
 
 # 配置日志记录
-logging.basicConfig(level=logging.DEBUG)
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# 创建 FileHandler 并指定 UTF-8 编码
+file_handler = logging.FileHandler("telemetry.log", encoding="utf-8")
+file_handler.setFormatter(log_formatter)
+
+# 获取 Logger 并添加 Handler
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+
+# 测量日志写入耗时
+start_time = time.perf_counter()
+logger.info("测试日志写入耗时")
+end_time = time.perf_counter()
+print(f"日志写入耗时: {(end_time - start_time) * 1000:.2f} ms")
+
 
 def udp_sender(udp_queue, udp_ip, udp_port):
     """UDP发送线程函数"""
@@ -28,7 +44,7 @@ def load_speed_profile(file_path):
     """直接加载速度配置文件"""
     try:
         mat_data = sio.loadmat(file_path)
-        speeds = mat_data.get('speed_profile', [])
+        speeds = mat_data.get('omega_ref', [])
         
         # 数据预处理
         if isinstance(speeds, np.ndarray):
@@ -55,14 +71,39 @@ def load_speed_profile(file_path):
         logging.error(f"Failed to load speed profile: {str(e)}")
         sys.exit(1)
 
+
+def print_telemetry(telemetry, last_telemetry):
+    """
+    将当前时刻和上一时刻的遥测数据写入日志文件，并记录这是第几个数据点。
+    
+    参数:
+        telemetry (TelemetryData): 当前时刻的遥测数据。
+        last_telemetry (TelemetryData): 上一时刻的遥测数据。
+    """
+    # 使用函数属性记录调用次数（即数据点编号）
+    if not hasattr(print_telemetry, "data_point_count"):
+        print_telemetry.data_point_count = 0  # 初始化数据点编号为 0
+    print_telemetry.data_point_count += 1  # 每次调用时递增编号
+
+    # 构造日志消息
+    log_message = (
+        f"数据点编号: {print_telemetry.data_point_count}\n"
+        f"当前时刻遥测数据:\n"
+        f"  control_target: {telemetry.control_target}\n"
+        f"  flywheel_speed_feedback: {telemetry.flywheel_speed_feedback}\n"
+        f"  flywheel_current_feedback: {telemetry.flywheel_current_feedback}\n"
+    )
+    # 写入日志
+    logging.info(log_message)
+
 def main():
     # 配置参数
-    COM = 'COM5'
+    COM = 'COM3'
     BAUD = 115200
-    POLLING_FREQ = 100  # 主线程循环频率（Hz）
+    POLLING_FREQ = 1000  # 主线程循环频率（Hz）
     UDP_IP = '127.0.0.1'  # 目标IP地址
     UDP_PORT = 5005       # 目标端口
-    SPEED_FILE = 'speed_profile.mat'  # 转速文件路径
+    SPEED_FILE = 'command_ref.mat'  # 转速文件路径
 
     # 预加载速度数据（主线程执行）
     speed_queue, last_speed = load_speed_profile(SPEED_FILE)
@@ -70,11 +111,13 @@ def main():
 
     # 初始化FlyWheel实例
     fw = FlyWheel(port=COM, baudrate=BAUD, auto_polling=True,
-                  polling_frequency=POLLING_FREQ, communication_frequency=1000)
+                  polling_frequency=POLLING_FREQ/2, communication_frequency=POLLING_FREQ)
     
     # 遥测数据队列
     telemetry_queue = queue.Queue(maxsize=10000)
-    fw.callback = lambda x: telemetry_queue.put(x) if not telemetry_queue.full() else None
+    fw.callback = print_telemetry
+#     fw.callback = lambda telemetry, last_telemetry: (
+#     telemetry_queue.put(telemetry) if not telemetry_queue.full() else None)
 
     # 启动UDP发送线程
     udp_thread = threading.Thread(target=udp_sender, args=(telemetry_queue, UDP_IP, UDP_PORT))
