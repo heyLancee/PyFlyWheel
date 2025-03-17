@@ -13,6 +13,13 @@ import json
 from dataclasses import dataclass
 
 
+class CallbackEvent:
+    """
+    回调函数触发类型
+    """
+    RECV_TELE_DATA = 1
+
+
 @dataclass
 class TelemetryData:
     """
@@ -58,7 +65,7 @@ class FlyWheel:
     """
     def __init__(self, port: str, baudrate: int, timeout: any = 1, inertia: float = 0.001608,
                  queue_size: int = 1000, communication_frequency: int = 200,
-                 callback: Callable[[TelemetryData, TelemetryData], None] = None, max_telemetry_size: int = 1000,
+                 callback: Callable[[CallbackEvent], None] = None, max_telemetry_size: int = 1000,
                  auto_polling: bool = False, polling_frequency: float = 100.0, rtx_buffer_size: int = 4096):
         """
         初始化飞轮连接
@@ -532,8 +539,7 @@ class FlyWheel:
                     try:
                         telemetry = self._process_data(frame)
                         if self.callback:
-                            last_telemetry = self.telemetry[-1] if self.telemetry else telemetry
-                            self.callback(telemetry, last_telemetry)
+                            self.callback(CallbackEvent.RECV_TELE_DATA)
                         self.telemetry.append(telemetry)
                     except Exception as e:
                         self.logger.error(f"处理遥测数据错误: {str(e)}")
