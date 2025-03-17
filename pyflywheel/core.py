@@ -11,6 +11,7 @@ from queue import Queue, Empty, Full
 import logging
 import json
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 
 
 class CallbackEvent:
@@ -66,7 +67,8 @@ class FlyWheel:
     def __init__(self, port: str, baudrate: int, timeout: any = 1, inertia: float = 0.001608,
                  queue_size: int = 1000, communication_frequency: int = 200,
                  callback: Callable[[CallbackEvent], None] = None, max_telemetry_size: int = 1000,
-                 auto_polling: bool = False, polling_frequency: float = 100.0, rtx_buffer_size: int = 4096):
+                 auto_polling: bool = False, polling_frequency: float = 100.0, rtx_buffer_size: int = 4096,
+                 max_thread_poll_workers=2):
         """
         初始化飞轮连接
 
@@ -119,6 +121,8 @@ class FlyWheel:
         )
         self.serial.set_buffer_size(rx_size=rtx_buffer_size, tx_size=rtx_buffer_size)
         self.serial.reset_input_buffer()
+
+        self.thread_poll = ThreadPoolExecutor(max_workers=max_thread_poll_workers, thread_name_prefix="pyflywheel_")
 
     def __del__(self):
         """
@@ -539,7 +543,7 @@ class FlyWheel:
                     try:
                         telemetry = self._process_data(frame)
                         if self.callback:
-                            self.callback(CallbackEvent.RECV_TELE_DATA)
+                            self.thread_poll.submit(self.callback, CallbackEvent.RECV_TELE_DATA)
                         self.telemetry.append(telemetry)
                     except Exception as e:
                         self.logger.error(f"处理遥测数据错误: {str(e)}")
