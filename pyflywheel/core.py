@@ -594,5 +594,5 @@ class FlyWheel:
             self.cmd_queue.put_nowait(command)
             return True
         except Full:
-            self.logger.error("命令队列已满")
+            #self.logger.error("命令队列已满")
             return False

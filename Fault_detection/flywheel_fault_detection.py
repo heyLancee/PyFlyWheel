@@ -12,8 +12,6 @@ import numpy as np
 import faulthandler
 faulthandler.enable()
 
-
-
 # 配置日志记录
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
@@ -85,20 +83,21 @@ def print_telemetry(telemetry, last_telemetry):
     # 构造日志消息
     log_message = (
         f"数据点编号: {print_telemetry.data_point_count}\n"
-        f"当前时刻遥测数据:\n"
-        f"  control_target: {telemetry.control_target}\n"
-        f"  flywheel_speed_feedback: {telemetry.flywheel_speed_feedback}\n"
-        f"  flywheel_current_feedback: {telemetry.flywheel_current_feedback}\n"
+        f"当前时刻: {telemetry.timestamp}(s)\n"
+        f"  control_target: {telemetry.control_target}(rpm)\n"
+        f"  flywheel_speed_feedback: {telemetry.flywheel_speed_feedback}(rpm)\n"
+        f"  flywheel_current_feedback: {telemetry.flywheel_current_feedback}(mA)\n"
     )
     # 写入日志
     logging.info(log_message)
+    #print(log_message)
 
 def main():
 
     # 配置参数
     COM = 'COM3'
     BAUD = 115200
-    POLLING_FREQ = 200  # 主线程循环频率（Hz）
+    POLLING_FREQ = 1000  # 主线程循环频率（Hz）
     UDP_IP = '127.0.0.1'  # 目标IP地址
     UDP_PORT = 5005       # 目标端口
     SPEED_FILE = 'command_ref.mat'  # 转速文件路径
@@ -144,7 +143,7 @@ def main():
                     logging.info(f"Switching to last speed: {current_speed} RPM")
 
             # 设置飞轮速度
-            fw.set_speed(500)
+            fw.set_speed(current_speed)
             
             # 控制循环频率
             time.sleep(1.0 / POLLING_FREQ)
