@@ -9,6 +9,10 @@ import threading
 from pyflywheel.core import FlyWheel
 import scipy.io as sio
 import numpy as np
+import faulthandler
+faulthandler.enable()
+
+
 
 # 配置日志记录
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -21,13 +25,6 @@ file_handler.setFormatter(log_formatter)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
-
-# 测量日志写入耗时
-start_time = time.perf_counter()
-logger.info("测试日志写入耗时")
-end_time = time.perf_counter()
-print(f"日志写入耗时: {(end_time - start_time) * 1000:.2f} ms")
-
 
 def udp_sender(udp_queue, udp_ip, udp_port):
     """UDP发送线程函数"""
@@ -97,10 +94,11 @@ def print_telemetry(telemetry, last_telemetry):
     logging.info(log_message)
 
 def main():
+
     # 配置参数
     COM = 'COM3'
     BAUD = 115200
-    POLLING_FREQ = 1000  # 主线程循环频率（Hz）
+    POLLING_FREQ = 200  # 主线程循环频率（Hz）
     UDP_IP = '127.0.0.1'  # 目标IP地址
     UDP_PORT = 5005       # 目标端口
     SPEED_FILE = 'command_ref.mat'  # 转速文件路径
@@ -111,7 +109,7 @@ def main():
 
     # 初始化FlyWheel实例
     fw = FlyWheel(port=COM, baudrate=BAUD, auto_polling=True,
-                  polling_frequency=POLLING_FREQ/2, communication_frequency=POLLING_FREQ)
+                  polling_frequency=POLLING_FREQ, communication_frequency=POLLING_FREQ, timeout=None, queue_size=2000)
     
     # 遥测数据队列
     telemetry_queue = queue.Queue(maxsize=10000)
@@ -123,7 +121,6 @@ def main():
     udp_thread = threading.Thread(target=udp_sender, args=(telemetry_queue, UDP_IP, UDP_PORT))
     udp_thread.daemon = True
     udp_thread.start()
-
 
     # 主控制变量
     current_speed = 0
@@ -147,7 +144,7 @@ def main():
                     logging.info(f"Switching to last speed: {current_speed} RPM")
 
             # 设置飞轮速度
-            fw.set_speed(current_speed)
+            fw.set_speed(500)
             
             # 控制循环频率
             time.sleep(1.0 / POLLING_FREQ)
@@ -161,6 +158,7 @@ def main():
         fw.stop()
         fw.disconnect()
         logging.info("Resources released")
+
 
 if __name__ == "__main__":
     main()
