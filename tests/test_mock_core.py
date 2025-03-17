@@ -60,6 +60,7 @@ class TestFlyWheel(unittest.TestCase):
         self.flywheel.serial.open = Mock(return_value=True)
         
         # 测试连接
+        self.flywheel.disconnect()
         result = self.flywheel.connect()
         self.assertTrue(result)
         self.assertTrue(self.flywheel._is_connected)
@@ -90,23 +91,16 @@ class TestFlyWheel(unittest.TestCase):
         """
         测试正常设置速度
         """
-        # 模拟正确的8字节响应
-        self.flywheel.serial.read.return_value = b'\x00' * 8
-        
-        # 测试设置速度
         result = self.flywheel.set_speed(100.0)
         self.assertTrue(result)
-        
-        # 验证写入命令
-        self.flywheel.serial.write.assert_called_once()
         
     def test_set_speed_failure(self):
         """
         测试设置速度失败情况
         """
-        # 模拟错误响应（少于8字节）
-        self.flywheel.serial.read.return_value = b'\x00' * 7
-        
+        # 模拟队列已满
+        self.flywheel.cmd_queue.put = Mock(side_effect=queue.Full)
+
         # 测试设置速度
         result = self.flywheel.set_speed(100.0)
         self.assertFalse(result)
@@ -134,44 +128,23 @@ class TestFlyWheel(unittest.TestCase):
             self.flywheel.set_speed(0)
         except ValueError:
             self.fail("合法速度值引发了异常")
-            
-    def test_poll_status(self):
+
+    def test_poll_status_success(self):
         """
         测试状态轮询
         """
-        # 模拟32字节响应数据
-        mock_response = (
-            b'\xEB\x90\xDD'  # 头部
-            b'\x00'  # last_command
-            b'\x00\x00\x00\x00'  # control_target
-            b'\x00\x00\x00\x00'  # flywheel_speed_feedback
-            b'\x00\x00\x00\x00'  # flywheel_current_feedback
-            b'\x00\x00\x00\x00'  # acceleration_feedback
-            b'\x00'  # command_response_count
-            b'\x00'  # telemetry_wheel_command_count
-            b'\x00'  # error_command_count
-            b'\x00\x00'  # motherboard_current
-            b'\x00'  # temperature
-            b'\x00'  # single_motor_status
-            b'\x00\x00\x00\x00'  # reserved
-            b'\x00'  # checksum
-        )
-        
-        self.flywheel.serial.read.return_value = mock_response
-        
-        # 测试轮询
         status = self.flywheel.poll_status()
-        
-        # 验证发送的轮询命令
-        self.flywheel.serial.write.assert_called_with(
-            bytes([0xEB, 0x90, 0xDD, 0x00, 0x00, 0x00, 0x00, 0xDD])
-        )
-        
-        # 验证解析的状态数据
-        self.assertEqual(status['header'], '0xEB 90 DD')
-        self.assertEqual(status['last_command'], '0x00')
-        self.assertEqual(status['control_target'], 0.0)
-        self.assertEqual(status['flywheel_speed_feedback'], 0.0)
+        self.assertTrue(status)
+            
+    def test_poll_status_failure(self):
+        """
+        测试状态轮询
+        """
+        # 模拟队列已满
+        self.flywheel.cmd_queue.put = Mock(side_effect=queue.Full)
+
+        status = self.flywheel.poll_status()
+        self.assertFalse(status)
         
     def test_process_data(self):
         """
@@ -233,23 +206,17 @@ class TestFlyWheel(unittest.TestCase):
         """
         测试正常设置力矩
         """
-        # 模拟正确的8字节响应
-        self.flywheel.serial.read.return_value = b'\x00' * 8
-        
         # 测试设置力矩
         result = self.flywheel.set_torque(30.0)
         self.assertTrue(result)
-        
-        # 验证写入命令
-        self.flywheel.serial.write.assert_called_once()
         
     def test_set_torque_failure(self):
         """
         测试设置力矩失败情况
         """
         # 模拟队列已满
-        self.flywheel.queue.put = Mock(side_effect=queue.Full)
-        
+        self.flywheel.cmd_queue.put = Mock(side_effect=queue.Full)
+
         # 测试设置力矩
         result = self.flywheel.set_torque(30.0)
         self.assertFalse(result)
