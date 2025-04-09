@@ -6,7 +6,7 @@ import serial
 import time
 import struct
 import threading
-from typing import Callable
+from typing import Callable, Optional
 from queue import Queue, Empty, Full
 import logging
 import json
@@ -64,7 +64,7 @@ class FlyWheel:
     """
     飞轮控制类，负责与飞轮硬件通过RS232进行通信
     """
-    def __init__(self, port: str, baudrate: int, timeout: any = 1, inertia: float = 0.001608,
+    def __init__(self, port: str, baudrate: int, timeout: Optional[int] = None, inertia: float = 0.001608,
                  queue_size: int = 1000, communication_frequency: int = 200,
                  callback: Callable[[CallbackEvent], None] = None, max_telemetry_size: int = 1000,
                  auto_polling: bool = False, polling_frequency: float = 100.0, rtx_buffer_size: int = 4096,
@@ -199,6 +199,11 @@ class FlyWheel:
         """
         self._running = False
         self._polling = False
+
+        # 哨兵
+        self.cmd_queue.put(None)
+        self.resp_queue.put(None)
+        self.serial.cancel_read()
 
         # 等待所有线程结束
         if self._comm_thread is not None:
@@ -441,6 +446,9 @@ class FlyWheel:
                 except Empty:
                     continue
 
+                if not command:
+                    continue
+
                 write_len = self.serial.write(command)
 
                 if write_len != len(command):
@@ -451,6 +459,8 @@ class FlyWheel:
 
             except Exception as e:
                 self.logger.exception(f"通信循环错误: {e}")
+
+        print("通信线程退出")
 
     def _response_loop(self) -> None:
         """
@@ -477,6 +487,8 @@ class FlyWheel:
             except Exception as e:
                 self.logger.exception(f"响应处理循环错误: {e}")
                 next_time = self._wait_for_next_cycle(next_time, period)
+
+        print("响应处理线程退出")
 
     def _process_response(self) -> None:
         """
@@ -553,6 +565,8 @@ class FlyWheel:
             except Exception as e:
                 self.logger.error(f"处理响应数据时发生错误: {str(e)}")
                 buffer.clear()
+
+        print("处理处理线程退出")
 
     def _wait_for_next_cycle(self, next_time: float, period: float) -> float:
         """
